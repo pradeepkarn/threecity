@@ -34,6 +34,17 @@ export class Physics {
     );
   }
 
+  /** An infinite flat floor at y = 0 (a "half-space": everything below y = 0 is solid). */
+  addGroundPlane(): RAPIER.Collider {
+    // There's no shortcut like ColliderDesc.cuboid() for this shape, so we build the shape directly.
+    return this.world.createCollider(new RAPIER.ColliderDesc(new RAPIER.HalfSpace({ x: 0, y: 1, z: 0 })));
+  }
+
+  /** Removes a collider, e.g. when its chunk is unloaded. */
+  removeCollider(collider: RAPIER.Collider): void {
+    this.world.removeCollider(collider, false);
+  }
+
   step(dt: number): void {
     this.world.timestep = dt;
     this.world.step();

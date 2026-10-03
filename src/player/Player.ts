@@ -1,6 +1,6 @@
 import * as THREE from 'three';
 import RAPIER from '@dimforge/rapier3d-compat';
-import type { Physics } from '../physics/Physics';
+import type { Physics, Vec3 } from '../physics/Physics';
 import type { Input } from '../input/Input';
 import type { OrbitCamera } from '../camera/OrbitCamera';
 import type { CharacterModel } from '../models/types';
@@ -17,7 +17,6 @@ const WALK_SPEED = 5;
 const TURN_SPEED = 12;
 const GRAVITY = -25;
 const JUMP_SPEED = 9;
-const SPAWN = { x: 0, y: 1.5, z: 5 };
 
 export class Player {
   /** Feet position, updated every frame. The camera follows this. */
@@ -27,6 +26,7 @@ export class Player {
   private readonly body: RAPIER.RigidBody;
   private readonly collider: RAPIER.Collider;
   private readonly controller: RAPIER.KinematicCharacterController;
+  private readonly spawn: Vec3;
 
   private verticalVelocity = 0;
   private grounded = false;
@@ -38,13 +38,14 @@ export class Player {
   private readonly right = new THREE.Vector3();
   private readonly move = new THREE.Vector3();
 
-  private constructor(physics: Physics, model: CharacterModel) {
+  private constructor(physics: Physics, model: CharacterModel, spawn: Vec3) {
     this.model = model;
+    this.spawn = { ...spawn }; // keep our own copy for respawning
     const world = physics.world;
 
     // Kinematic: our code moves it; the controller stops it going through things.
     this.body = world.createRigidBody(
-      RAPIER.RigidBodyDesc.kinematicPositionBased().setTranslation(SPAWN.x, SPAWN.y, SPAWN.z)
+      RAPIER.RigidBodyDesc.kinematicPositionBased().setTranslation(spawn.x, spawn.y, spawn.z)
     );
     this.collider = world.createCollider(RAPIER.ColliderDesc.capsule(HALF_HEIGHT, RADIUS), this.body);
 
@@ -58,10 +59,11 @@ export class Player {
   }
 
   // Async because loading the model (later a GLB) is async.
-  static async create(scene: THREE.Scene, physics: Physics): Promise<Player> {
+  // `spawn` is where the capsule's centre starts; World decides where that is.
+  static async create(scene: THREE.Scene, physics: Physics, spawn: Vec3): Promise<Player> {
     const model = await loadPlayerModel();
     scene.add(model.root);
-    return new Player(physics, model);
+    return new Player(physics, model, spawn);
   }
 
   /** Step 1 of the frame: work out where the player wants to go and ask physics. */
@@ -99,7 +101,7 @@ export class Player {
     const p = this.body.translation();
 
     if (p.y < -10) {
-      this.body.setTranslation(SPAWN, true);
+      this.body.setTranslation(this.spawn, true);
       this.verticalVelocity = 0;
     }
 

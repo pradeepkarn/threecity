@@ -57,3 +57,16 @@ canvas {
 #jump-btn:active {
   background: rgba(255, 255, 255, 0.55);
 }
+
+#hud {
+  position: fixed;
+  top: 10px;
+  left: 10px;
+  padding: 6px 10px;
+  border-radius: 6px;
+  background: rgba(0, 0, 0, 0.45);
+  color: #fff;
+  font: 13px monospace;
+  pointer-events: none;
+  z-index: 10;
+}

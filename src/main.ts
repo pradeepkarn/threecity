@@ -11,11 +11,16 @@ async function main(): Promise<void> {
   const physics = await Physics.create();
 
   const world = new World(engine.scene, physics);
-  await world.build();
+  await world.build(); // loads the 3 x 3 chunks around the spawn point
 
-  const player = await Player.create(engine.scene, physics);
+  const player = await Player.create(engine.scene, physics, world.spawnPoint);
   const input = new Input();
   const orbit = new OrbitCamera(engine.camera, engine.renderer.domElement);
+
+  // Small debug display in the top-left corner: which chunk you're in, how many are loaded.
+  const hud = document.createElement('div');
+  hud.id = 'hud';
+  document.body.appendChild(hud);
 
   let last = performance.now();
 
@@ -23,17 +28,20 @@ async function main(): Promise<void> {
     const dt = Math.min((now - last) / 1000, 0.05);
     last = now;
 
-    player.update(dt, input, orbit); // 1. decide where the player wants to go
-    physics.step(dt);                // 2. simulate the physics world
-    player.syncVisual(dt);           // 3. move the visible model to the physics body
-    world.syncDynamics();            // 4. same for crates, balls, etc.
+    player.update(dt, input, orbit);   // 1. decide where the player wants to go
+    physics.step(dt);                  // 2. simulate the physics world
+    player.syncVisual(dt);             // 3. move the visible model to the physics body
+
+    world.update(player.position);     // 4. stream chunks so the player stays in the middle one
 
     // 5. Indoors: hide that building's roof and pull the camera in closer.
     const inside = world.updateInteriors(player.position);
     orbit.targetDistance = inside ? 5 : 9;
     orbit.update(player.position, dt); //    camera follows the player
+    engine.followTarget(player.position); // sunlight and shadows follow too
 
-    engine.render();                 // 6. draw the frame
+    hud.textContent = world.debugText;
+    engine.render();                   // 6. draw the frame
 
     requestAnimationFrame(tick);
   }

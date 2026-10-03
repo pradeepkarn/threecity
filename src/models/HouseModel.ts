@@ -109,11 +109,12 @@ export async function loadHouseModel(wallColor = 0xf1efe8): Promise<EnterableBui
   part([1.0, 0.3, 0.2], [sofaX, 0.6, 0.3], sofaMat, false);                        // arm
   part([1.0, 0.3, 0.2], [sofaX, 0.6, 2.7], sofaMat, false);                        // arm
 
-  // ---------- Ceiling lamp + warm light ----------
-  part([0.6, 0.15, 0.6], [0, HEIGHT - 0.1, 0], mat(0xfac775), false);
-  const light = new THREE.PointLight(0xffd9a0, 15, 14, 2);
-  light.position.set(0, HEIGHT - 0.5, 0);
-  root.add(light);
+  // ---------- Ceiling lamp ----------
+  // It glows by itself (emissive) instead of using a real PointLight. In a streaming city,
+  // houses constantly load and unload, and every time the number of lights changes, three.js
+  // must recompile its shaders, which causes a visible stutter. A glowing material costs nothing.
+  const lampMat = new THREE.MeshStandardMaterial({ color: 0xfac775, emissive: 0xffd27a, emissiveIntensity: 1.5 });
+  part([0.6, 0.15, 0.6], [0, HEIGHT - 0.1, 0], lampMat, false);
 
   // ---------- Roof (a separate group so it can be hidden) ----------
   const run = halfD + 0.4;                          // how far each slope reaches past the wall

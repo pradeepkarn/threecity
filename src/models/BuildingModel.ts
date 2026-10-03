@@ -5,6 +5,10 @@ import { enableShadows } from './utils';
 const windowGeometry = new THREE.BoxGeometry(1.2, 1.4, 0.06);
 const windowMaterial = new THREE.MeshStandardMaterial({ color: 0xb5d4f4, roughness: 0.2 });
 const doorMaterial = new THREE.MeshStandardMaterial({ color: 0x4a2a10 });
+// Mark them as shared, so removing one chunk doesn't delete them for every other building.
+windowGeometry.userData.shared = true;
+windowMaterial.userData.shared = true;
+doorMaterial.userData.shared = true;
 
 // PLACEHOLDER building: walls, roof slab, a door and rows of windows.
 // Origin is at the CENTRE OF THE BASE (ground level), the usual convention for GLB buildings.

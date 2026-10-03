@@ -1,38 +1,79 @@
 import * as THREE from 'three';
-import RAPIER from '@dimforge/rapier3d-compat';
 import type { Physics, Vec3 } from '../physics/Physics';
-import { loadBuildingModel } from '../models/BuildingModel';
-import { loadHouseModel } from '../models/HouseModel';
-import type { EnterableBuildingModel } from '../models/types';
-import {
-  loadBallModel, loadCrateModel, loadTreeModel, TREE_TRUNK_HEIGHT, TREE_TRUNK_RADIUS,
-} from '../models/PropModels';
+import { Chunk } from './Chunk';
+import { CHUNK_SIZE, SPAWN_POINT, populateChunk } from './ChunkGenerator';
 
-export const WORLD_HALF = 50;
+// How many chunks to keep around the player in each direction.
+// 1 means a 3 x 3 grid (9 chunks) with the player always in the middle one:
+//
+//    7 | 8 | 9
+//    4 | 5 | 6        5 = the chunk the player is in
+//    1 | 2 | 3
+const VIEW_RADIUS = 1;
 
-// A physics body plus the model that follows it.
-type DynamicObject = { body: RAPIER.RigidBody; visual: THREE.Object3D };
+// The middle chunk only changes once the player is this far past its edge.
+// Without it, walking along a border would load and delete chunks over and over.
+const SWITCH_MARGIN = 4;
 
-// Builds the level. Pattern used everywhere: load a MODEL for looks, add a simple COLLIDER for physics.
+/**
+ * The streaming city. Keeps a 3 x 3 grid of chunks around the player:
+ * when the player crosses into another chunk, chunks that fall outside the grid are
+ * deleted and the new ones ahead are loaded, so the player is always in the middle.
+ */
 export class World {
+  readonly spawnPoint: Vec3 = SPAWN_POINT;
+
   private readonly scene: THREE.Scene;
   private readonly physics: Physics;
-  private readonly dynamics: DynamicObject[] = [];
-  private readonly enterables: EnterableBuildingModel[] = [];
+  private readonly chunks = new Map<string, Chunk>();  // every chunk currently kept, by "cx,cz"
+  private readonly loadQueue: Chunk[] = [];            // chunks waiting to be built
   private readonly localPoint = new THREE.Vector3();
+
+  private centerX = 0;  // grid coordinates of the middle chunk (chunk 5)
+  private centerZ = 0;
 
   constructor(scene: THREE.Scene, physics: Physics) {
     this.scene = scene;
     this.physics = physics;
   }
 
+  /** World X or Z position -> chunk grid coordinate. Chunk 0 spans -40..40, chunk 1 spans 40..120, etc. */
+  static toChunk(position: number): number {
+    return Math.floor(position / CHUNK_SIZE + 0.5);
+  }
+
+  /** Loads the first 3 x 3 chunks around the spawn point and waits for all of them. */
   async build(): Promise<void> {
-    this.createGround();
-    this.createRampAndStairs();
-    // Loading in parallel: with real GLBs this makes startup much faster.
-    await Promise.all([
-      this.createBuildings(), this.createHouse(), this.createTrees(), this.createProps(),
-    ]);
+    // One infinite flat floor for the whole world, so the ground never has gaps or seams.
+    this.physics.addGroundPlane();
+
+    this.centerX = World.toChunk(this.spawnPoint.x);
+    this.centerZ = World.toChunk(this.spawnPoint.z);
+    const initial = this.refreshChunks();
+    // At startup we wait for every chunk, so the player never spawns into empty space.
+    await Promise.all(initial.map((chunk) => this.loadChunk(chunk)));
+  }
+
+  /** Call every frame with the player's position. */
+  update(playerFeet: THREE.Vector3): void {
+    const limit = CHUNK_SIZE / 2 + SWITCH_MARGIN;
+    let changed = false;
+
+    // Has the player gone clearly past the edge of the middle chunk?
+    if (Math.abs(playerFeet.x - this.centerX * CHUNK_SIZE) > limit) {
+      this.centerX = World.toChunk(playerFeet.x);
+      changed = true;
+    }
+    if (Math.abs(playerFeet.z - this.centerZ * CHUNK_SIZE) > limit) {
+      this.centerZ = World.toChunk(playerFeet.z);
+      changed = true;
+    }
+
+    if (changed) this.loadQueue.push(...this.refreshChunks());
+
+    // Build at most one new chunk per frame, spreading the work out so the game doesn't stutter.
+    const next = this.loadQueue.shift();
+    if (next) void this.loadChunk(next);
   }
 
   /**
@@ -41,159 +82,78 @@ export class World {
    */
   updateInteriors(playerFeet: THREE.Vector3): boolean {
     let insideAny = false;
-    for (const building of this.enterables) {
-      // Convert the player's world position into the building's own local space,
-      // so the check works no matter where the building is placed or how it's rotated.
-      this.localPoint.copy(playerFeet);
-      building.root.worldToLocal(this.localPoint);
-      const inside = building.interior.containsPoint(this.localPoint);
-      building.roof.visible = !inside;
-      if (inside) insideAny = true;
+    for (const chunk of this.chunks.values()) {
+      if (!chunk.isReady) continue;
+      for (const building of chunk.enterables) {
+        this.localPoint.copy(playerFeet);
+        building.root.worldToLocal(this.localPoint);
+        const inside = building.interior.containsPoint(this.localPoint);
+        building.roof.visible = !inside;
+        if (inside) insideAny = true;
+      }
     }
     return insideAny;
   }
 
-  private async createHouse(): Promise<void> {
-    const house = await loadHouseModel();
-    house.root.position.set(-28, 0, -12);
-    house.root.rotation.y = Math.PI / 2; // door (local +Z) now faces +X, towards the town centre
-    house.root.updateMatrixWorld(true);  // make sure its transform is ready before we use it
-    this.scene.add(house.root);
+  /** Short status line for the on-screen debug display. */
+  get debugText(): string {
+    let ready = 0;
+    for (const chunk of this.chunks.values()) if (chunk.isReady) ready++;
+    return `Chunk (${this.centerX}, ${this.centerZ})  ·  loaded ${ready}/${this.chunks.size}`;
+  }
 
-    // Turn each local collider box into a world-space physics collider.
-    const worldCenter = new THREE.Vector3();
-    for (const box of house.colliders) {
-      worldCenter.copy(box.center).applyMatrix4(house.root.matrixWorld);
-      this.physics.addStaticBox(worldCenter, box.size, house.root.quaternion);
+  /**
+   * Makes the kept chunks match the 3 x 3 grid around the current middle chunk.
+   * Deletes chunks outside the grid, creates missing ones, and returns the new ones to load.
+   */
+  private refreshChunks(): Chunk[] {
+    const wanted = new Set<string>();
+    const created: Chunk[] = [];
+
+    for (let dz = -VIEW_RADIUS; dz <= VIEW_RADIUS; dz++) {
+      for (let dx = -VIEW_RADIUS; dx <= VIEW_RADIUS; dx++) {
+        const cx = this.centerX + dx;
+        const cz = this.centerZ + dz;
+        const key = Chunk.keyOf(cx, cz);
+        wanted.add(key);
+        if (!this.chunks.has(key)) {
+          const chunk = new Chunk(cx, cz);
+          this.chunks.set(key, chunk);
+          created.push(chunk);
+        }
+      }
     }
 
-    this.enterables.push(house);
-  }
-
-  /** Copy each dynamic body's position and rotation onto its model. Call after physics.step(). */
-  syncDynamics(): void {
-    for (const { body, visual } of this.dynamics) {
-      const p = body.translation();
-      const r = body.rotation();
-      visual.position.set(p.x, p.y, p.z);
-      visual.quaternion.set(r.x, r.y, r.z, r.w);
-    }
-  }
-
-  private createGround(): void {
-    const ground = new THREE.Mesh(
-      new THREE.PlaneGeometry(WORLD_HALF * 2, WORLD_HALF * 2),
-      new THREE.MeshStandardMaterial({ color: 0x8fc45a })
-    );
-    ground.rotation.x = -Math.PI / 2;
-    ground.receiveShadow = true;
-    this.scene.add(ground);
-
-    // Thick slab whose top is at y = 0, plus invisible walls at the edges.
-    this.physics.addStaticBox({ x: 0, y: -0.5, z: 0 }, { x: WORLD_HALF * 2, y: 1, z: WORLD_HALF * 2 });
-    const h = 10;
-    const len = WORLD_HALF * 2;
-    this.physics.addStaticBox({ x: 0, y: h / 2, z: WORLD_HALF + 0.5 }, { x: len, y: h, z: 1 });
-    this.physics.addStaticBox({ x: 0, y: h / 2, z: -WORLD_HALF - 0.5 }, { x: len, y: h, z: 1 });
-    this.physics.addStaticBox({ x: WORLD_HALF + 0.5, y: h / 2, z: 0 }, { x: 1, y: h, z: len });
-    this.physics.addStaticBox({ x: -WORLD_HALF - 0.5, y: h / 2, z: 0 }, { x: 1, y: h, z: len });
-  }
-
-  private async createBuildings(): Promise<void> {
-    const buildings = [
-      { x: -12, z: -10, w: 8, d: 8, h: 6, color: 0xf5c4b3 },
-      { x: 12, z: -12, w: 10, d: 7, h: 9, color: 0xcecbf6 },
-      { x: -14, z: 14, w: 7, d: 10, h: 5, color: 0xfac775 },
-      { x: 15, z: 12, w: 9, d: 9, h: 12, color: 0xb5d4f4 },
-    ];
-
-    await Promise.all(buildings.map(async (b) => {
-      const model = await loadBuildingModel(b.w, b.h, b.d, b.color);
-      model.position.set(b.x, 0, b.z); // origin is at the base, so y = 0
-      this.scene.add(model);
-      this.physics.addStaticBox({ x: b.x, y: b.h / 2, z: b.z }, { x: b.w, y: b.h, z: b.d });
-    }));
-  }
-
-  private async createTrees(): Promise<void> {
-    const spots = [[-30, -30], [-25, 30], [30, -30], [35, 30], [-35, 0], [0, 35], [-5, -38], [40, -15]];
-
-    await Promise.all(spots.map(async ([x, z]) => {
-      const tree = await loadTreeModel();
-      tree.position.set(x, 0, z);
-      tree.rotation.y = Math.random() * Math.PI * 2; // variety for free
-      this.scene.add(tree);
-      // Only the trunk is solid; you can walk under the leaves.
-      this.physics.addStaticCylinder({ x, y: TREE_TRUNK_HEIGHT / 2, z }, TREE_TRUNK_HEIGHT, TREE_TRUNK_RADIUS);
-    }));
-  }
-
-  private async createProps(): Promise<void> {
-    const crates: Vec3[] = [
-      { x: 6, y: 0.5, z: 8 },
-      { x: 6, y: 1.51, z: 8 },
-      { x: 6, y: 2.52, z: 8 },
-      { x: 7.2, y: 0.5, z: 8 },
-      { x: 4.8, y: 0.5, z: 8 },
-    ];
-    for (const pos of crates) {
-      const crate = await loadCrateModel();
-      this.addDynamic(pos, RAPIER.ColliderDesc.cuboid(0.5, 0.5, 0.5).setDensity(0.5), crate);
+    for (const [key, chunk] of this.chunks) {
+      if (!wanted.has(key)) {
+        this.unloadChunk(chunk);
+        this.chunks.delete(key);
+      }
     }
 
-    const ballRadius = 0.6;
-    const ball = await loadBallModel(ballRadius);
-    this.addDynamic(
-      { x: -5, y: 1, z: 6 },
-      RAPIER.ColliderDesc.ball(ballRadius).setDensity(0.3).setRestitution(0.6),
-      ball,
-      0.3
-    );
+    return created;
   }
 
-  // Level geometry that stays simple boxes even later (ramps, steps, platforms).
-  private createRampAndStairs(): void {
-    const rampTilt = new THREE.Quaternion().setFromAxisAngle(
-      new THREE.Vector3(0, 0, 1), THREE.MathUtils.degToRad(20)
-    );
-    this.addBlock({ x: -2, y: 1.5, z: -25 }, { x: 10, y: 0.5, z: 4 }, 0xd3d1c7, rampTilt);
-    this.addBlock({ x: 5.7, y: 1.7, z: -25 }, { x: 6, y: 3.4, z: 6 }, 0xb4b2a9);
+  private async loadChunk(chunk: Chunk): Promise<void> {
+    if (!chunk.startLoading()) return; // already removed before its turn came
 
-    const stepH = 0.3;
-    const stepD = 0.6;
-    for (let i = 0; i < 8; i++) {
-      const h = (i + 1) * stepH;
-      this.addBlock({ x: 25 + i * stepD, y: h / 2, z: 0 }, { x: stepD, y: h, z: 3 }, 0xd3d1c7);
+    await populateChunk(chunk, this.physics);
+
+    // The player may have walked away while this chunk was loading.
+    if (chunk.cancelled) {
+      chunk.dispose(this.scene, this.physics);
+      return;
     }
-    this.addBlock({ x: 31, y: 1.2, z: 0 }, { x: 3, y: 2.4, z: 3 }, 0xb4b2a9);
+
+    chunk.finishLoading();
+    this.scene.add(chunk.group); // only shown once fully built, so it never appears half-done
   }
 
-  /** A visible box with a matching static collider. */
-  private addBlock(center: Vec3, size: Vec3, color: number,
-                   rotation: THREE.Quaternion = new THREE.Quaternion()): void {
-    const mesh = new THREE.Mesh(
-      new THREE.BoxGeometry(size.x, size.y, size.z),
-      new THREE.MeshStandardMaterial({ color })
-    );
-    mesh.position.set(center.x, center.y, center.z);
-    mesh.quaternion.copy(rotation);
-    mesh.castShadow = true;
-    mesh.receiveShadow = true;
-    this.scene.add(mesh);
-    this.physics.addStaticBox(center, size, rotation);
-  }
-
-  /** A physics-driven object: Rapier moves the body, syncDynamics() moves the model. */
-  private addDynamic(position: Vec3, collider: RAPIER.ColliderDesc,
-                     visual: THREE.Object3D, damping = 0): void {
-    const body = this.physics.world.createRigidBody(
-      RAPIER.RigidBodyDesc.dynamic()
-        .setTranslation(position.x, position.y, position.z)
-        .setLinearDamping(damping)
-        .setAngularDamping(damping)
-    );
-    this.physics.world.createCollider(collider, body);
-    this.scene.add(visual);
-    this.dynamics.push({ body, visual });
+  private unloadChunk(chunk: Chunk): void {
+    if (chunk.isLoading) {
+      chunk.cancel(); // can't stop it mid-way; loadChunk cleans it up when it finishes
+    } else {
+      chunk.dispose(this.scene, this.physics);
+    }
   }
 }

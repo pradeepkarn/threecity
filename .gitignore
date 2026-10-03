@@ -1,5 +1,5 @@
 node_modules
-.zip
+*.zip
 dist
 .env
 next
