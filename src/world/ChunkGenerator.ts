@@ -2,12 +2,14 @@ import * as THREE from 'three';
 import type { Physics } from '../physics/Physics';
 import type { Chunk } from './Chunk';
 import type { Bridge, CityLayout, Lot } from './CityLayout';
+import { mountainAmount } from './terrain';
 import { CHUNK_SIZE, WATER_LEVEL } from './config';
 import { Random, hash2 } from './random';
 import { valueNoise } from './noise';
 import { loadBuildingModel } from '../models/BuildingModel';
 import { loadHouseModel } from '../models/HouseModel';
-import { loadForestTrees, PINE_TRUNK_HEIGHT, PINE_TRUNK_RADIUS, type TreeTransform } from '../models/ForestModel';
+import { createInstances, type InstanceTransform } from '../models/assets';
+import { PROPS, TREE_TRUNK, type PropId } from '../models/catalog';
 
 // =============================================================================================
 // Builds ONE chunk by cutting its 80 x 80 piece out of the city layout.
@@ -18,8 +20,11 @@ import { loadForestTrees, PINE_TRUNK_HEIGHT, PINE_TRUNK_RADIUS, type TreeTransfo
 // =============================================================================================
 
 const TERRAIN_CELLS = 40;  // 40 x 40 squares per chunk: one height sample every 2 units
-const TREE_CELL = 5;       // one possible tree per 5 x 5 cell, seeded by its world position
-const TREE_SEED = 777;
+const NATURE_CELL = 5;     // one possible tree/bush/rock per 5 x 5 cell, seeded by its world position
+const NATURE_SEED = 777;
+const BUSH_DENSITY = 0.08;   // bushes in parks
+const BENCH_DENSITY = 0.012; // benches in parks
+const ROCK_DENSITY = 0.05;   // boulders in the mountains
 const ROAD_LIFT = 0.08;    // roads sit just above the flattened ground so they don't flicker
 const UP = new THREE.Vector3(0, 1, 0);
 
@@ -53,7 +58,7 @@ export async function populateChunk(chunk: Chunk, physics: Physics, layout: City
   builder.buildWater();
   builder.buildRoads();
   builder.buildBridges();
-  await Promise.all([builder.buildLots(), builder.buildTrees()]);
+  await Promise.all([builder.buildLots(), builder.buildStreetProps(), builder.buildNature()]);
 }
 
 class ChunkBuilder {
@@ -65,6 +70,8 @@ class ChunkBuilder {
   private readonly centerX: number; // world position of the chunk's centre (the group's origin)
   private readonly centerZ: number;
   private lowestGround = Infinity;
+  // Copies of each prop to draw in this chunk, collected first, then drawn with instancing.
+  private readonly instances = new Map<PropId, InstanceTransform[]>();
 
   constructor(chunk: Chunk, physics: Physics, layout: CityLayout) {
     this.chunk = chunk;
@@ -268,11 +275,12 @@ class ChunkBuilder {
   // ---------------------------------------------------------------------------------------
   async buildLots(): Promise<void> {
     const { lots } = this.layout.contentFor(this.chunk.cx, this.chunk.cz);
-    await Promise.all(lots.map((lot) => (lot.kind === 'house' ? this.buildHouse(lot) : this.buildTower(lot))));
+    await Promise.all(lots.map((lot) => (lot.kind === 'house' ? this.buildHouse(lot) : this.buildBuilding(lot))));
   }
 
-  private async buildTower(lot: Lot): Promise<void> {
-    const model = await loadBuildingModel(lot.width, lot.height, lot.depth, lot.color);
+  private async buildBuilding(lot: Lot): Promise<void> {
+    if (!lot.building) return;
+    const model = await loadBuildingModel(lot.building);
     model.position.set(lot.x - this.centerX, lot.padHeight, lot.z - this.centerZ);
     model.rotation.y = lot.angle;
     this.chunk.group.add(model);
@@ -300,37 +308,102 @@ class ChunkBuilder {
   }
 
   // ---------------------------------------------------------------------------------------
-  // Trees: forests, parks and countryside, drawn as one InstancedMesh per tree part.
+  // Street lights and parked cars that the city layout placed in this chunk.
   // ---------------------------------------------------------------------------------------
-  async buildTrees(): Promise<void> {
-    const trees: TreeTransform[] = [];
-    const cellsPerSide = CHUNK_SIZE / TREE_CELL;
-    const firstCellX = Math.round(this.minX / TREE_CELL);
-    const firstCellZ = Math.round(this.minZ / TREE_CELL);
+  async buildStreetProps(): Promise<void> {
+    for (const item of this.layout.contentFor(this.chunk.cx, this.chunk.cz).props) {
+      const y = item.onRoad ? this.layout.roadHeight(item.x, item.z) + ROAD_LIFT : this.layout.heightAt(item.x, item.z);
+      const info = PROPS[item.prop];
+      this.addInstance(item.prop, item.x, y, item.z, item.angle, info.scale);
+
+      if (item.prop === 'streetlight') {
+        const height = info.size[1] * info.scale;
+        this.chunk.colliders.push(this.physics.addStaticCylinder({ x: item.x, y: y + height / 2, z: item.z }, height, 0.15));
+      } else {
+        this.addPropBox(item.prop, item.x, y, item.z, item.angle, info.scale); // cars are solid
+      }
+    }
+    await this.flushInstances();
+  }
+
+  // ---------------------------------------------------------------------------------------
+  // Nature: trees (forests, parks, countryside), bushes and benches in parks, rocks in the
+  // mountains. Each spot is a 5 x 5 cell seeded by its WORLD position, so forests flow
+  // seamlessly across chunk borders.
+  // ---------------------------------------------------------------------------------------
+  async buildNature(): Promise<void> {
+    const cellsPerSide = CHUNK_SIZE / NATURE_CELL;
+    const firstCellX = Math.round(this.minX / NATURE_CELL);
+    const firstCellZ = Math.round(this.minZ / NATURE_CELL);
 
     for (let iz = 0; iz < cellsPerSide; iz++) {
       for (let ix = 0; ix < cellsPerSide; ix++) {
         const cellX = firstCellX + ix;
         const cellZ = firstCellZ + iz;
-        // Seeded by the cell's WORLD position, so forests flow seamlessly across chunk borders.
-        const random = new Random(hash2(cellX, cellZ, TREE_SEED));
-        const roll = random.next();
-        const x = cellX * TREE_CELL + random.range(0.5, TREE_CELL - 0.5);
-        const z = cellZ * TREE_CELL + random.range(0.5, TREE_CELL - 0.5);
+        const random = new Random(hash2(cellX, cellZ, NATURE_SEED));
+        // Draw every random value up front, always in the same order.
+        const treeRoll = random.next();
+        const extraRoll = random.next();
+        const x = cellX * NATURE_CELL + random.range(0.5, NATURE_CELL - 0.5);
+        const z = cellZ * NATURE_CELL + random.range(0.5, NATURE_CELL - 0.5);
         const turn = random.range(0, Math.PI * 2);
-        const size = random.range(0.8, 1.4);
+        const size = random.range(0.8, 1.3);
+        const treeType: PropId = random.next() < 0.5 ? 'tree_A' : 'tree_B';
+        const rockType = random.pick<PropId>(['rock_A', 'rock_C', 'rock_E']);
 
-        if (roll > this.layout.treeDensityAt(x, z)) continue;
-        if (!this.layout.isTreeSpotFree(x, z)) continue;
-
+        if (!this.layout.isSpotClear(x, z)) continue;
+        const density = this.layout.belowTreeline(x, z) ? this.layout.treeDensityAt(x, z) : 0;
+        const inPark = this.layout.isPark(x, z);
         const ground = this.layout.heightAt(x, z);
-        trees.push({ x: x - this.centerX, y: ground, z: z - this.centerZ, rotation: turn, scale: size });
-        const trunk = PINE_TRUNK_HEIGHT * size;
-        this.chunk.colliders.push(this.physics.addStaticCylinder(
-          { x, y: ground + trunk / 2, z }, trunk, PINE_TRUNK_RADIUS * size
-        ));
+
+        if (treeRoll < density) {
+          const scale = PROPS[treeType].scale * size;
+          this.addInstance(treeType, x, ground, z, turn, scale);
+          const trunk = TREE_TRUNK.height * scale;
+          this.chunk.colliders.push(this.physics.addStaticCylinder(
+            { x, y: ground + trunk / 2, z }, trunk, TREE_TRUNK.radius * scale
+          ));
+        } else if (inPark && extraRoll < BENCH_DENSITY) {
+          this.addInstance('bench', x, ground, z, turn, PROPS.bench.scale);
+          this.addPropBox('bench', x, ground, z, turn, PROPS.bench.scale);
+        } else if (inPark && extraRoll < BUSH_DENSITY) {
+          this.addInstance('bush', x, ground, z, turn, PROPS.bush.scale * size); // walk-through
+        } else if (extraRoll < ROCK_DENSITY * mountainAmount(x, z)) {
+          const scale = PROPS[rockType].scale * size;
+          this.addInstance(rockType, x, ground - 0.3, z, turn, scale); // slightly sunk into the slope
+          this.addPropBox(rockType, x, ground - 0.3, z, turn, scale);
+        }
       }
     }
-    if (trees.length > 0) this.chunk.group.add(await loadForestTrees(trees));
+    await this.flushInstances();
+  }
+
+  /** Remembers one copy of a prop; flushInstances() draws them all together. */
+  private addInstance(prop: PropId, x: number, y: number, z: number, rotation: number, scale: number): void {
+    let list = this.instances.get(prop);
+    if (!list) {
+      list = [];
+      this.instances.set(prop, list);
+    }
+    list.push({ x: x - this.centerX, y, z: z - this.centerZ, rotation, scale });
+  }
+
+  /** Draws every collected prop type as instanced meshes (a few draw calls per type). */
+  private async flushInstances(): Promise<void> {
+    const batches = [...this.instances.entries()];
+    this.instances.clear();
+    const groups = await Promise.all(batches.map(([prop, items]) =>
+      createInstances(PROPS[prop].url, items, !PROPS[prop].sinkIntoGround)));
+    for (const group of groups) this.chunk.group.add(group);
+  }
+
+  /** A box collider matching a prop's size, standing on the ground at (x, y, z). */
+  private addPropBox(prop: PropId, x: number, y: number, z: number, rotation: number, scale: number): void {
+    const [w, h, d] = PROPS[prop].size;
+    this.chunk.colliders.push(this.physics.addStaticBox(
+      { x, y: y + (h * scale) / 2, z },
+      { x: w * scale, y: h * scale, z: d * scale },
+      new THREE.Quaternion().setFromAxisAngle(UP, rotation)
+    ));
   }
 }

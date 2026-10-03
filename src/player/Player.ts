@@ -5,6 +5,7 @@ import type { Input } from '../input/Input';
 import type { OrbitCamera } from '../camera/OrbitCamera';
 import type { CharacterModel } from '../models/types';
 import { loadPlayerModel } from '../models/PlayerModel';
+import { DEFAULT_CHARACTER, type CharacterId } from '../models/catalog';
 
 // Capsule size: total height = 2 * (HALF_HEIGHT + RADIUS) = 2 units.
 const RADIUS = 0.5;
@@ -13,7 +14,9 @@ const HALF_HEIGHT = 0.5;
 // This is the distance between the two.
 const FEET_OFFSET = HALF_HEIGHT + RADIUS;
 
-const WALK_SPEED = 5;
+const WALK_SPEED = 2.5;     // gentle push on the joystick
+const RUN_SPEED = 6;       // full push, or the keyboard
+const RUN_THRESHOLD = 0.6; // how far the joystick must be pushed to run
 const TURN_SPEED = 12;
 const GRAVITY = -25;
 const JUMP_SPEED = 9;
@@ -31,6 +34,7 @@ export class Player {
   private verticalVelocity = 0;
   private grounded = false;
   private moving = false;
+  private running = false;
 
   // Reused every frame instead of creating new vectors (avoids garbage on phones).
   private readonly input = new THREE.Vector2();
@@ -60,8 +64,9 @@ export class Player {
 
   // Async because loading the model (later a GLB) is async.
   // `spawn` is where the capsule's centre starts; World decides where that is.
-  static async create(scene: THREE.Scene, physics: Physics, spawn: Vec3): Promise<Player> {
-    const model = await loadPlayerModel();
+  static async create(scene: THREE.Scene, physics: Physics, spawn: Vec3,
+                      character: CharacterId = DEFAULT_CHARACTER): Promise<Player> {
+    const model = await loadPlayerModel(character);
     scene.add(model.root);
     return new Player(physics, model, spawn);
   }
@@ -73,7 +78,13 @@ export class Player {
     this.move.set(0, 0, 0)
       .addScaledVector(this.forward, this.input.y)
       .addScaledVector(this.right, this.input.x);
-    this.moving = this.move.lengthSq() > 1e-4;
+    // How hard the stick is pushed (0..1) decides walking or running.
+    const strength = Math.min(1, this.input.length());
+    this.moving = strength > 0.05 && this.move.lengthSq() > 1e-6;
+    this.running = strength >= RUN_THRESHOLD;
+    const speed = this.running ? RUN_SPEED : WALK_SPEED;
+    if (this.moving) this.move.normalize().multiplyScalar(speed);
+    else this.move.set(0, 0, 0);
 
     // Always read the jump so a press in mid-air doesn't fire on landing.
     const wantsJump = input.consumeJump();
@@ -81,9 +92,9 @@ export class Player {
     this.verticalVelocity += GRAVITY * dt;
 
     const desired = {
-      x: this.move.x * WALK_SPEED * dt,
+      x: this.move.x * dt,
       y: this.verticalVelocity * dt,
-      z: this.move.z * WALK_SPEED * dt,
+      z: this.move.z * dt,
     };
     this.controller.computeColliderMovement(this.collider, desired);
     const corrected = this.controller.computedMovement();
@@ -116,7 +127,7 @@ export class Player {
     }
 
     if (!this.grounded) this.model.play('jump');
-    else if (this.moving) this.model.play('walk');
+    else if (this.moving) this.model.play(this.running ? 'run' : 'walk');
     else this.model.play('idle');
     this.model.update(dt);
   }

@@ -102,6 +102,7 @@ export class World {
         building.root.worldToLocal(this.localPoint);
         const inside = building.interior.containsPoint(this.localPoint);
         building.roof.visible = !inside;
+        building.furnishings.visible = inside; // furniture is only drawn while you're indoors
         if (inside) insideAny = true;
       }
     }

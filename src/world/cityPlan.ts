@@ -96,6 +96,21 @@ export const CITY_PLAN = {
       closed: true,
       points: [[-900, -900], [0, -1100], [900, -800], [1150, 0], [800, 900], [0, 1150], [-900, 800], [-1150, 0]],
     },
+    {
+      name: 'Outer Ring Road',
+      width: 14,          // Slightly wider for a major highway
+      closed: true,       // Loops back to the start point automatically
+      points: [
+        [0, -2000],       // North: clear of border mountains
+        [1500, -1500],    // North-East: river crossing
+        [2200, 0],        // East: loops around Eastside
+        [1500, 1400],     // South-East: passes northwest of the SE mountain peak
+        [0, 2100],        // South: loops past South Hills
+        [-1500, 1500],    // South-West: flat terrain
+        [-2100, 0],       // West: clears Westside district
+        [-1300, -1200],   // North-West: passes southeast of the NW mountain peak
+      ],
+    },
   ] as RoadPlan[],
 
   districts: [

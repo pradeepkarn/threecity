@@ -8,6 +8,10 @@ import { SpatialGrid } from './SpatialGrid';
 import { Random, hash2 } from './random';
 import { valueNoise } from './noise';
 import type { Vec3 } from '../physics/Physics';
+import {
+  BUILDINGS, CAR_IDS, DOWNTOWN_BUILDINGS, RESIDENTIAL_BUILDINGS, SUBURB_BUILDINGS,
+  type BuildingId, type PropId,
+} from '../models/catalog';
 
 // ---------- Tuning ----------
 const SAMPLE_STEP = 2;          // roads are stored as points every 2 units
@@ -24,6 +28,10 @@ const LOT_EVERY = 6;            // try placing a building every 6 road samples (
 const TREELINE = 70;            // no trees above this height
 const LOT_SEED = WORLD_SEED + 50;
 const STREET_SEED = WORLD_SEED + 60;
+const PROP_SEED = WORLD_SEED + 70;
+const STREETLIGHT_EVERY = 15;   // a street light every 15 road samples (30 units)
+const CAR_EVERY = 11;           // a chance of a parked car every 22 units
+const CAR_CHANCE = 0.35;
 
 // ---------- Data types ----------
 export interface RoadSample { x: number; z: number; nx: number; nz: number } // point + sideways direction
@@ -32,27 +40,30 @@ export interface Road { id: number; name: string; halfWidth: number; samples: Ro
 export interface RoadSegment { road: Road; index: number }
 export interface Bridge { x0: number; z0: number; x1: number; z1: number; halfWidth: number; top: number }
 
-export type LotKind = 'tower' | 'small' | 'house';
+/** 'building' = a GLB building from the catalog; 'house' = a house you can walk into. */
+export type LotKind = 'building' | 'house';
 export interface Lot {
-  x: number; z: number;     // centre
-  angle: number;            // rotation; the front (+Z side) faces the road
+  x: number; z: number;       // centre
+  angle: number;              // rotation; the front (+Z side) faces the road
   width: number; depth: number; height: number;
   kind: LotKind;
-  color: number;
-  padHeight: number;        // height of the flat ground it stands on
-  radius: number;           // rough size, for overlap checks
+  building: BuildingId | null; // which GLB, for kind 'building'
+  color: number;              // wall colour, for kind 'house'
+  padHeight: number;          // height of the flat ground it stands on
+  radius: number;             // rough size, for overlap checks
 }
 
+/** A street light or parked car placed along a road. */
+export interface StreetProp { prop: PropId; x: number; z: number; angle: number; onRoad: boolean }
+
 /** Everything one chunk owns: things whose centre point lies inside it. */
-export interface ChunkContent { segments: RoadSegment[]; bridges: Bridge[]; lots: Lot[] }
+export interface ChunkContent { segments: RoadSegment[]; bridges: Bridge[]; lots: Lot[]; props: StreetProp[] }
 
 interface RiverSegment { ax: number; az: number; bx: number; bz: number; halfWidth: number }
 interface Area<T> { plan: T; minX: number; maxX: number; minZ: number; maxZ: number }
 
-const EMPTY_CONTENT: ChunkContent = { segments: [], bridges: [], lots: [] };
+const EMPTY_CONTENT: ChunkContent = { segments: [], bridges: [], lots: [], props: [] };
 
-const TOWER_COLORS = [0xf5c4b3, 0xcecbf6, 0xfac775, 0xb5d4f4, 0x9fe1cb, 0xf4c0d1, 0xd3d1c7];
-const SMALL_COLORS = [0xfaeeda, 0xe1f5ee, 0xfbeaf0, 0xe6f1fb, 0xf1efe8, 0xf5c4b3];
 const HOUSE_COLORS = [0xf1efe8, 0xfaeeda, 0xe1f5ee, 0xfbeaf0, 0xe6f1fb];
 
 // ---------- Small geometry helpers ----------
@@ -147,6 +158,7 @@ export class CityLayout {
     layout.buildDistrictStreets();
     layout.assignRoadsAndBridges();
     layout.buildLots();
+    layout.buildStreetProps();
     return layout;
   }
 
@@ -180,10 +192,11 @@ export class CityLayout {
   }
 
   /** Distance from a point to the EDGE of the nearest road (negative = on the road). */
-  roadEdgeDistance(x: number, z: number, searchRadius: number): number {
+  roadEdgeDistance(x: number, z: number, searchRadius: number, ignoreRoad?: Road): number {
     const r = searchRadius + this.maxRoadHalfWidth;
     let best = Infinity;
     for (const seg of this.roadGrid.query(x - r, z - r, x + r, z + r, this.roadHits)) {
+      if (seg.road === ignoreRoad) continue;
       const a = seg.road.samples[seg.index];
       const b = seg.road.samples[seg.index + 1];
       const edge = distToSegment(x, z, a.x, a.z, b.x, b.z) - seg.road.halfWidth;
@@ -249,11 +262,20 @@ export class CityLayout {
     return CITY_PLAN.countrysideTreeDensity;
   }
 
-  /** False if a tree here would stand in water, on a road, on a building lot, or above the treeline. */
-  isTreeSpotFree(x: number, z: number): boolean {
+  /** True inside a park from the plan (where benches and bushes go). */
+  isPark(x: number, z: number): boolean {
+    return areaAt(this.greens, x, z)?.kind === 'park';
+  }
+
+  /** False if something placed here would stand in water, on a road, or on a building lot. */
+  isSpotClear(x: number, z: number): boolean {
     if (this.waterFactor(x, z) > 0.001) return false;
     if (this.roadEdgeDistance(x, z, 2) < 2) return false;
-    if (this.buildingPad(x, z).weight > 0) return false;
+    return this.buildingPad(x, z).weight === 0;
+  }
+
+  /** True if trees grow at this height (they stop at the treeline; rocks don't). */
+  belowTreeline(x: number, z: number): boolean {
     return landHeight(x, z) < TREELINE;
   }
 
@@ -381,7 +403,7 @@ export class CityLayout {
     const key = chunkKey(chunkOf(x), chunkOf(z));
     let c = this.content.get(key);
     if (!c) {
-      c = { segments: [], bridges: [], lots: [] };
+      c = { segments: [], bridges: [], lots: [], props: [] };
       this.content.set(key, c);
     }
     return c;
@@ -483,22 +505,81 @@ export class CityLayout {
     this.lotGrid.insert(lot, x - r, z - r, x + r, z + r);
     this.contentOf(x, z).lots.push(lot);
   }
+
+  /**
+   * Street lights along roads inside districts, and cars parked along district streets.
+   * Like everything else, decided once from fixed seeds: the same for every player.
+   */
+  private buildStreetProps(): void {
+    for (const road of this.roads) {
+      const s = road.samples;
+      const isStreet = road.halfWidth * 2 === LOCAL_ROAD_WIDTH;
+
+      for (let i = 4; i < s.length - 4; i++) {
+        const random = new Random(hash2(road.id * 4096 + i, 3, PROP_SEED));
+        const roll = random.next();
+        const side = random.next() < 0.5 ? 1 : -1;
+        const carType = random.pick(CAR_IDS);
+
+        // ---------- Street lights: alternate sides, on the sidewalk ----------
+        if (i % STREETLIGHT_EVERY === 0) {
+          const lightSide = (i / STREETLIGHT_EVERY) % 2 === 0 ? 1 : -1;
+          const nx = s[i].nx * lightSide;
+          const nz = s[i].nz * lightSide;
+          const x = s[i].x + nx * (road.halfWidth + 1.2);
+          const z = s[i].z + nz * (road.halfWidth + 1.2);
+          if (this.isGoodStreetSpot(x, z, road, 0.8)) {
+            // The light's arm points along its local -X; turn it to hang over the road.
+            this.contentOf(x, z).props.push({ prop: 'streetlight', x, z, angle: Math.atan2(-nz, nx), onRoad: false });
+          }
+        }
+
+        // ---------- Parked cars: along district streets, in the kerb lane ----------
+        if (isStreet && i % CAR_EVERY === 5 && roll < CAR_CHANCE) {
+          const nx = s[i].nx * side;
+          const nz = s[i].nz * side;
+          const x = s[i].x + nx * (road.halfWidth - 1.4);
+          const z = s[i].z + nz * (road.halfWidth - 1.4);
+          // Keep clear of crossings: no other road within 6 units.
+          if (this.isGoodStreetSpot(x, z, road, 6)) {
+            const angle = Math.atan2(s[i].nz, -s[i].nx); // the car's front (+Z) points along the road
+            this.contentOf(x, z).props.push({ prop: carType, x, z, angle, onRoad: true });
+          }
+        }
+      }
+    }
+  }
+
+  /** Inside a district, on dry land, clear of buildings and at least `clearance` from other roads. */
+  private isGoodStreetSpot(x: number, z: number, road: Road, clearance: number): boolean {
+    if (!areaAt(this.districts, x, z)) return false;
+    if (this.waterFactor(x, z) > 0.001) return false;
+    if (this.roadEdgeDistance(x, z, clearance, road) < clearance) return false;
+    return this.buildingPad(x, z).weight < 0.99;
+  }
 }
 
 /** What to build on a lot, by district style. All random values are drawn every time, in the same order. */
 function chooseBuilding(style: DistrictStyle, random: Random):
-  { kind: LotKind; width: number; depth: number; height: number; color: number } {
+  { kind: LotKind; building: BuildingId | null; width: number; depth: number; height: number; color: number } {
   const roll = random.next();
-  const tower = { width: random.int(16, 26), depth: random.int(16, 24), height: random.int(18, 60), color: random.pick(TOWER_COLORS) };
-  const small = { width: random.int(10, 14), depth: random.int(9, 13), height: random.int(6, 11), color: random.pick(SMALL_COLORS) };
-  const house = { width: 12, depth: 10, height: 6, color: random.pick(HOUSE_COLORS) }; // matches HouseModel's size
+  const downtown = random.pick(DOWNTOWN_BUILDINGS);
+  const residential = random.pick(RESIDENTIAL_BUILDINGS);
+  const suburb = random.pick(SUBURB_BUILDINGS);
+  const houseColor = random.pick(HOUSE_COLORS);
+
+  const fromCatalog = (id: BuildingId) => {
+    const b = BUILDINGS[id];
+    return { kind: 'building' as const, building: id, width: b.width, depth: b.depth, height: b.height, color: 0 };
+  };
+  const house = { kind: 'house' as const, building: null, width: 12, depth: 10, height: 6, color: houseColor }; // matches HouseModel
 
   switch (style) {
     case 'downtown':
-      return roll < 0.85 ? { kind: 'tower', ...tower } : { kind: 'small', ...small };
+      return fromCatalog(downtown);
     case 'residential':
-      return roll < 0.55 ? { kind: 'house', ...house } : { kind: 'small', ...small };
+      return roll < 0.5 ? house : fromCatalog(residential);
     case 'suburb':
-      return roll < 0.85 ? { kind: 'house', ...house } : { kind: 'small', ...small };
+      return roll < 0.8 ? house : fromCatalog(suburb);
   }
 }

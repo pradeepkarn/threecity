@@ -10,17 +10,19 @@ async function main(): Promise<void> {
   const engine = new Engine();
   const physics = await Physics.create();
 
+  // Small display in the top-left corner: loading status, then where you are.
+  const hud = document.createElement('div');
+  hud.id = 'hud';
+  hud.textContent = 'Loading city…';
+  document.body.appendChild(hud);
+
   const world = new World(engine.scene, physics);
-  await world.build(); // loads the 3 x 3 chunks around the spawn point
+  await world.build(); // plans the city, then loads its models and the 3 x 3 chunks around the spawn point
 
   const player = await Player.create(engine.scene, physics, world.spawnPoint);
   const input = new Input();
   const orbit = new OrbitCamera(engine.camera, engine.renderer.domElement);
 
-  // Small debug display in the top-left corner: which chunk you're in, how many are loaded.
-  const hud = document.createElement('div');
-  hud.id = 'hud';
-  document.body.appendChild(hud);
 
   let last = performance.now();
 
