@@ -289,6 +289,48 @@ export class CityLayout {
     return 'Countryside';
   }
 
+  /**
+   * A safe place to arrive near (x, z) when travelling: the nearest point on a road
+   * (never on a bridge), or, with no road nearby, the nearest dry spot clear of buildings.
+   */
+  findSafeSpot(x: number, z: number): Vec3 {
+    const limit = WORLD_HALF - 60;
+    x = Math.max(-limit, Math.min(limit, x));
+    z = Math.max(-limit, Math.min(limit, z));
+
+    const r = 250;
+    let best: { x: number; z: number } | null = null;
+    let bestDistance = Infinity;
+    for (const seg of this.roadGrid.query(x - r, z - r, x + r, z + r, this.roadHits)) {
+      const s = seg.road.samples[seg.index];
+      const d = Math.hypot(s.x - x, s.z - z);
+      if (d < bestDistance && d < r) {
+        bestDistance = d;
+        best = { x: s.x, z: s.z };
+      }
+    }
+    // Make sure the chosen road point is on dry land (not on a bridge).
+    if (best && this.waterFactor(best.x, best.z) > 0) best = null;
+
+    if (!best) {
+      // Search outward in rings for dry ground with no building on it.
+      search: for (let ring = 0; ring <= 40; ring++) {
+        const steps = Math.max(1, ring * 8);
+        for (let k = 0; k < steps; k++) {
+          const a = (k / steps) * Math.PI * 2;
+          const px = x + Math.cos(a) * ring * 6;
+          const pz = z + Math.sin(a) * ring * 6;
+          if (this.waterFactor(px, pz) === 0 && this.buildingPad(px, pz).weight === 0) {
+            best = { x: px, z: pz };
+            break search;
+          }
+        }
+      }
+    }
+    const spot = best ?? { x, z };
+    return { x: spot.x, y: this.heightAt(spot.x, spot.z) + 1.5, z: spot.z };
+  }
+
   /** Start position: on the road at the plan's spawn point, capsule centre just above ground. */
   spawnPoint(): Vec3 {
     const [x, z] = CITY_PLAN.spawn;

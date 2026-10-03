@@ -27,7 +27,7 @@ export class World {
 
   private readonly scene: THREE.Scene;
   private readonly physics: Physics;
-  private layout!: CityLayout; // created in build()
+  private cityLayout!: CityLayout; // created in build()
   private readonly chunks = new Map<string, Chunk>();
   private readonly loadQueue: Chunk[] = [];
   private readonly localPoint = new THREE.Vector3();
@@ -50,19 +50,43 @@ export class World {
   /** Works out the city layout, then builds the first 3 x 3 chunks around the spawn point. */
   async build(): Promise<void> {
     const started = performance.now();
-    this.layout = CityLayout.build();
+    this.cityLayout = CityLayout.build();
     console.log(
       `City layout ready in ${Math.round(performance.now() - started)} ms: ` +
-      `${this.layout.roads.length} roads, ${this.layout.lots.length} buildings, ${this.layout.bridges.length} bridges`
+      `${this.cityLayout.roads.length} roads, ${this.cityLayout.lots.length} buildings, ${this.cityLayout.bridges.length} bridges`
     );
 
-    this.spawnPoint = this.layout.spawnPoint();
+    this.spawnPoint = this.cityLayout.spawnPoint();
     this.addWorldEdges();
 
     this.centerX = chunkOf(this.spawnPoint.x);
     this.centerZ = chunkOf(this.spawnPoint.z);
     const initial = this.refreshChunks();
     await Promise.all(initial.map((chunk) => this.loadChunk(chunk)));
+  }
+
+  /** The worked-out city (roads, buildings...), e.g. for drawing the map. */
+  get layout(): CityLayout {
+    return this.cityLayout;
+  }
+
+  /** Where to arrive when travelling to (x, z): a safe spot nearby. */
+  findSafeSpot(x: number, z: number): Vec3 {
+    return this.cityLayout.findSafeSpot(x, z);
+  }
+
+  /**
+   * Travelling: makes (x, z) the middle chunk and builds all 9 chunks around it right away,
+   * waiting until they're ready, so the player never arrives in empty space.
+   */
+  async prepareArea(x: number, z: number): Promise<void> {
+    this.centerX = chunkOf(x);
+    this.centerZ = chunkOf(z);
+    this.playerX = x;
+    this.playerZ = z;
+    this.loadQueue.length = 0;
+    const created = this.refreshChunks();
+    await Promise.all(created.map((chunk) => this.loadChunk(chunk)));
   }
 
   /** Call every frame with the player's position. */
@@ -113,7 +137,7 @@ export class World {
   get debugText(): string {
     let ready = 0;
     for (const chunk of this.chunks.values()) if (chunk.isReady) ready++;
-    const place = this.layout.placeName(this.playerX, this.playerZ);
+    const place = this.cityLayout.placeName(this.playerX, this.playerZ);
     const x = Math.round(this.playerX);
     const z = Math.round(this.playerZ);
     return `${place}  ·  x ${x}, z ${z}  ·  chunk (${this.centerX}, ${this.centerZ})  ·  loaded ${ready}/${this.chunks.size}`;
@@ -164,7 +188,7 @@ export class World {
   private async loadChunk(chunk: Chunk): Promise<void> {
     if (!chunk.startLoading()) return; // already removed before its turn came
 
-    await populateChunk(chunk, this.physics, this.layout);
+    await populateChunk(chunk, this.physics, this.cityLayout);
 
     // The player may have walked away while this chunk was loading.
     if (chunk.cancelled) {

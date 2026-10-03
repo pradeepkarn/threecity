@@ -1,12 +1,13 @@
+import planData from './cityPlan.json';
+
 // =============================================================================================
-// THE CITY PLAN: the hand-designed layout of the whole city. Edit this file to shape the city.
+// THE CITY PLAN: the hand-designed layout of the whole city.
 //
-// Coordinates are world units [x, z]. The city spans -3200 .. 3200 on both axes
-// (80 x 80 chunks of 80 units). Spawn is near [0, 0], downtown.
-// To find coordinates in-game, look at the on-screen display while walking.
+// The plan itself lives in cityPlan.json, so it can be edited VISUALLY with the planner
+// (open /planner.html while `npm run dev` is running) as well as by hand.
+// This file only describes its shape (the types) and loads it.
 //
-// Everything here is plain data. CityLayout.ts turns it into roads, buildings and terrain,
-// and the result is identical for every player.
+// Coordinates are world units [x, z]. The city spans -3200 .. 3200 on both axes.
 // =============================================================================================
 
 /** A point on the map: [x, z]. */
@@ -54,103 +55,22 @@ export interface GreenPlan {
   density: number; // 0 = no trees, 1 = a tree on every possible spot
 }
 
-export const CITY_PLAN = {
-  /** Where players start. */
-  spawn: [0, 0] as Point,
+export interface CityPlan {
+  spawn: Point;
+  borderMountains: { band: number; height: number };
+  mountains: MountainPlan[];
+  river: RiverPlan;
+  ponds: PondPlan[];
+  roads: RoadPlan[];
+  districts: DistrictPlan[];
+  greens: GreenPlan[];
+  countrysideTreeDensity: number;
+}
 
-  /** Mountains rising along all four edges: a natural border for the city. */
-  borderMountains: { band: 500, height: 150 },
+/** The current plan. Every part of the game reads this one object. */
+export const CITY_PLAN: CityPlan = structuredClone(planData as unknown as CityPlan);
 
-  /** Extra mountains inside the city. */
-  mountains: [
-    { x: -1900, z: -1600, radius: 650, height: 170 },
-    { x: 2100, z: 1800, radius: 550, height: 140 },
-  ] as MountainPlan[],
-
-  /** The river comes down from the northern mountains, passes east of downtown, and leaves south-east. */
-  river: {
-    width: 28,
-    points: [[0, -3150], [-300, -2000], [200, -1100], [380, -300], [300, 400], [900, 1200], [1500, 2000], [2500, 3150]],
-  } as RiverPlan,
-
-  ponds: [
-    { x: 210, z: 230, radius: 40 },   // in Central Park, west of the river
-    { x: -1200, z: -700, radius: 70 },
-  ] as PondPlan[],
-
-  /** Main roads. Each district also gets its own street grid automatically. */
-  roads: [
-    {
-      name: 'East-West Avenue',
-      width: 12,
-      points: [[-2700, 200], [-1600, 100], [-800, -50], [0, -80], [800, 100], [1600, -100], [2700, 150]],
-    },
-    {
-      name: 'North-South Avenue',
-      width: 12,
-      points: [[-650, -2700], [-650, -1500], [-300, -700], [0, 0], [-100, 800], [100, 1600], [300, 2700]], // stays west of the river
-    },
-    {
-      name: 'Ring Road',
-      width: 12,
-      closed: true,
-      points: [[-900, -900], [0, -1100], [900, -800], [1150, 0], [800, 900], [0, 1150], [-900, 800], [-1150, 0]],
-    },
-    {
-      name: 'Outer Ring Road',
-      width: 14,          // Slightly wider for a major highway
-      closed: true,       // Loops back to the start point automatically
-      points: [
-        [0, -2000],       // North: clear of border mountains
-        [1500, -1500],    // North-East: river crossing
-        [2200, 0],        // East: loops around Eastside
-        [1500, 1400],     // South-East: passes northwest of the SE mountain peak
-        [0, 2100],        // South: loops past South Hills
-        [-1500, 1500],    // South-West: flat terrain
-        [-2100, 0],       // West: clears Westside district
-        [-1300, -1200],   // North-West: passes southeast of the NW mountain peak
-      ],
-    },
-  ] as RoadPlan[],
-
-  districts: [
-    {
-      name: 'Downtown',
-      style: 'downtown',
-      polygon: [[-700, -500], [-200, -750], [500, -650], [750, -100], [600, 500], [0, 700], [-600, 450]],
-      streetAngle: 10,
-      streetSpacing: 90,
-    },
-    {
-      name: 'Westside',
-      style: 'residential',
-      polygon: [[-1500, -300], [-750, -450], [-650, 500], [-900, 1100], [-1600, 900]],
-      streetAngle: -18,
-      streetSpacing: 70,
-    },
-    {
-      name: 'Eastside',
-      style: 'residential',
-      polygon: [[800, -600], [1600, -500], [1800, 300], [1100, 800], [700, 500]],
-      streetAngle: 25,
-      streetSpacing: 70,
-    },
-    {
-      name: 'South Hills',
-      style: 'suburb',
-      polygon: [[-500, 800], [400, 800], [700, 1500], [-200, 1800], [-800, 1400]],
-      streetAngle: 5,
-      streetSpacing: 85,
-    },
-  ] as DistrictPlan[],
-
-  greens: [
-    { name: 'Central Park', kind: 'park', polygon: [[150, 150], [480, 120], [520, 460], [180, 490]], density: 0.12 },
-    { name: 'Old Forest', kind: 'forest', polygon: [[-2600, -2600], [-1300, -2700], [-1100, -1700], [-2300, -1300]], density: 0.65 },
-    { name: 'East Woods', kind: 'forest', polygon: [[1400, 1000], [2400, 900], [2650, 2100], [1800, 2400]], density: 0.6 },
-    { name: 'Lakeside Woods', kind: 'forest', polygon: [[-1500, -1000], [-900, -1050], [-950, -500], [-1450, -450]], density: 0.4 },
-  ] as GreenPlan[],
-
-  /** Trees scattered over open countryside (outside districts and greens). */
-  countrysideTreeDensity: 0.05,
-};
+/** Swaps in a new plan (used by the planner to preview edits live). */
+export function replaceCityPlan(plan: CityPlan): void {
+  Object.assign(CITY_PLAN, structuredClone(plan));
+}

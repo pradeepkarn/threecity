@@ -14,9 +14,8 @@ const HALF_HEIGHT = 0.5;
 // This is the distance between the two.
 const FEET_OFFSET = HALF_HEIGHT + RADIUS;
 
-const WALK_SPEED = 2.5;     // gentle push on the joystick
-const RUN_SPEED = 6;       // full push, or the keyboard
-const RUN_THRESHOLD = 0.6; // how far the joystick must be pushed to run
+const WALK_SPEED = 3;      // normal speed
+const RUN_SPEED = 7.5;     // while running (Shift, or the Run button)
 const TURN_SPEED = 12;
 const GRAVITY = -25;
 const JUMP_SPEED = 9;
@@ -71,6 +70,25 @@ export class Player {
     return new Player(physics, model, spawn);
   }
 
+  /** Which way the character faces (radians around the vertical axis; 0 = facing +Z). */
+  get heading(): number {
+    return this.model.root.rotation.y;
+  }
+
+  /** True while actually running (moving with run switched on). */
+  get isRunning(): boolean {
+    return this.running;
+  }
+
+  /** Moves the player instantly, e.g. when travelling with the map. */
+  teleport(target: Vec3): void {
+    this.body.setTranslation(target, true);
+    this.body.setNextKinematicTranslation(target);
+    this.verticalVelocity = 0;
+    this.position.set(target.x, target.y - FEET_OFFSET, target.z);
+    this.model.root.position.copy(this.position);
+  }
+
   /** Step 1 of the frame: work out where the player wants to go and ask physics. */
   update(dt: number, input: Input, camera: OrbitCamera): void {
     input.getMove(this.input);
@@ -78,10 +96,10 @@ export class Player {
     this.move.set(0, 0, 0)
       .addScaledVector(this.forward, this.input.y)
       .addScaledVector(this.right, this.input.x);
-    // How hard the stick is pushed (0..1) decides walking or running.
+    // Walk by default; run while Shift is held or the Run button is on.
     const strength = Math.min(1, this.input.length());
     this.moving = strength > 0.05 && this.move.lengthSq() > 1e-6;
-    this.running = strength >= RUN_THRESHOLD;
+    this.running = this.moving && input.isRunning();
     const speed = this.running ? RUN_SPEED : WALK_SPEED;
     if (this.moving) this.move.normalize().multiplyScalar(speed);
     else this.move.set(0, 0, 0);

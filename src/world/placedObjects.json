@@ -1,0 +1,5 @@
+[
+  {"id":"obj_muskb0g7_0","asset":"building_A","position":[-40,7.095,54],"rotation":[0,90,0],"scale":[1.5,1.5,1.5]},
+  {"id":"obj_muskc0sr_1","asset":"rock_C","position":[39,7.51,44],"rotation":[0,0,0],"scale":[1.3,2.5,1]},
+  {"id":"obj_muskujjg_0","asset":"car_taxi","position":[15,7.523,5],"rotation":[0,90,0],"scale":[1,1,1]}
+]

@@ -1,0 +1,93 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>MyCity Planner</title>
+  <style>
+    * { box-sizing: border-box; }
+    html, body { margin: 0; height: 100%; font: 13px/1.45 system-ui, sans-serif; color: #2c2c2a; background: #2c2c2a; }
+    #app { display: flex; height: 100%; }
+    #panel { width: 290px; flex: none; overflow-y: auto; background: #f7f6f2; padding: 14px; border-right: 1px solid #d3d1c7; }
+    #panel h1 { font-size: 17px; margin: 0 0 2px; }
+    #panel .sub { color: #5f5e5a; margin: 0 0 12px; }
+    #panel h2 { font-size: 11px; text-transform: uppercase; letter-spacing: .06em; color: #5f5e5a; margin: 16px 0 6px; }
+    .tools { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; }
+    button { font: inherit; border: 1px solid #d3d1c7; background: #fff; border-radius: 7px; padding: 7px 9px; cursor: pointer; color: #2c2c2a; }
+    button:hover { background: #f1efe8; }
+    button.active { background: #0f6e56; border-color: #0f6e56; color: #fff; }
+    button.primary { background: #0f6e56; border-color: #0f6e56; color: #fff; }
+    button.danger { color: #a32d2d; }
+    .row { display: flex; gap: 6px; flex-wrap: wrap; }
+    #tool-help { background: #e1f5ee; border-left: 3px solid #0f6e56; padding: 7px 9px; border-radius: 4px; margin: 8px 0 0; }
+    .field { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin: 5px 0; }
+    .field label { color: #5f5e5a; }
+    .field input[type=text], .field input[type=number], .field select { width: 150px; padding: 5px 6px; border: 1px solid #d3d1c7; border-radius: 6px; font: inherit; background: #fff; }
+    .checks label { display: block; margin: 3px 0; }
+    #status { margin-top: 10px; min-height: 20px; color: #0f6e56; font-weight: 600; }
+    .keys { color: #5f5e5a; font-size: 12px; }
+    .keys b { color: #2c2c2a; }
+    main { position: relative; flex: 1; min-width: 0; }
+    #view { width: 100%; height: 100%; display: block; }
+    #readout { position: absolute; left: 10px; bottom: 10px; background: rgba(44,44,42,.85); color: #fff; padding: 6px 10px; border-radius: 6px; font: 12px ui-monospace, monospace; pointer-events: none; }
+    #busy { position: absolute; right: 10px; top: 10px; background: #ba7517; color: #fff; padding: 6px 10px; border-radius: 6px; display: none; }
+  </style>
+</head>
+<body>
+  <div id="app">
+    <aside id="panel">
+      <h1>City planner</h1>
+      <p class="sub">Design MyCity visually. Changes rebuild the real city layout.</p>
+
+      <h2>Tools</h2>
+      <div class="tools">
+        <button data-tool="select">Select / move (V)</button>
+        <button data-tool="road">Road (R)</button>
+        <button data-tool="district">District (D)</button>
+        <button data-tool="green">Park / forest (G)</button>
+        <button data-tool="pond">Pond (P)</button>
+        <button data-tool="mountain">Mountain (M)</button>
+      </div>
+      <p id="tool-help"></p>
+
+      <h2>Selected</h2>
+      <div id="props">Nothing selected. Click a road, district, park, river, pond or mountain.</div>
+
+      <h2>Show</h2>
+      <div class="checks">
+        <label><input type="checkbox" id="show-preview" checked /> Generated city preview</label>
+        <label><input type="checkbox" id="show-grid" checked /> Grid and coordinates</label>
+        <label><input type="checkbox" id="show-outlines" checked /> Plan outlines and points</label>
+        <label><input type="checkbox" id="snap" checked /> Snap points to 10 units</label>
+      </div>
+
+      <h2>City settings</h2>
+      <div id="settings"></div>
+
+      <h2>Plan</h2>
+      <div class="row">
+        <button class="primary" id="save">Save to game</button>
+        <button id="download">Download JSON</button>
+        <button id="undo">Undo (Ctrl+Z)</button>
+        <button class="danger" id="revert">Revert all</button>
+      </div>
+      <div id="status"></div>
+
+      <h2>Controls</h2>
+      <div class="keys">
+        <b>Drag</b> empty space to move the view · <b>Wheel</b> to zoom<br />
+        <b>Drag a point</b> to move it · <b>Drag a shape</b> to move all of it<br />
+        <b>Double-click</b> a selected shape's edge to add a point<br />
+        <b>Delete</b> removes the selected point, or the whole shape<br />
+        <b>Enter</b> finishes drawing · <b>Esc</b> cancels
+      </div>
+    </aside>
+    <main>
+      <canvas id="view"></canvas>
+      <div id="readout"></div>
+      <div id="busy">Rebuilding city…</div>
+    </main>
+  </div>
+  <script type="module" src="/src/planner/main.ts"></script>
+</body>
+</html>
