@@ -72,6 +72,8 @@ export class Chunk {
     // Without this, every chunk you walk past would leak memory until the phone runs out.
     // Resources marked `shared` are reused by every chunk, so we leave those alone.
     this.group.traverse((obj) => {
+      // InstancedMesh (forests) also holds a buffer of per-tree positions on the GPU.
+      if (obj instanceof THREE.InstancedMesh) obj.dispose();
       if (obj instanceof THREE.Mesh || obj instanceof THREE.Line) {
         if (!obj.geometry.userData.shared) obj.geometry.dispose();
         const materials: THREE.Material[] = Array.isArray(obj.material) ? obj.material : [obj.material];

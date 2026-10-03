@@ -34,6 +34,18 @@ export class Physics {
     );
   }
 
+  /**
+   * Hilly ground for one chunk, covering sizeX by sizeZ and centred on `center`.
+   * `cells` is how many squares the grid has per side, so there are (cells + 1) x (cells + 1)
+   * height values. Rapier's order (verified with raycasts): index = xIndex * (cells + 1) + zIndex.
+   */
+  addHeightfield(center: Vec3, cells: number, heights: Float32Array, sizeX: number, sizeZ: number): RAPIER.Collider {
+    return this.world.createCollider(
+      RAPIER.ColliderDesc.heightfield(cells, cells, heights, { x: sizeX, y: 1, z: sizeZ })
+        .setTranslation(center.x, center.y, center.z)
+    );
+  }
+
   /** An infinite flat floor at y = 0 (a "half-space": everything below y = 0 is solid). */
   addGroundPlane(): RAPIER.Collider {
     // There's no shortcut like ColliderDesc.cuboid() for this shape, so we build the shape directly.

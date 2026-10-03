@@ -1,5 +1,5 @@
 import * as THREE from 'three';
-import { enableShadows } from './utils';
+import { bakeMeshes, enableShadows } from './utils';
 
 // Shared between all buildings, so 100 buildings don't create 100 copies.
 const windowGeometry = new THREE.BoxGeometry(1.2, 1.4, 0.06);
@@ -40,22 +40,30 @@ export async function loadBuildingModel(
   root.add(door);
 
   // Windows: one row per 3-unit floor, on the front and back faces.
+  // A 60-unit tower has hundreds of windows. As separate meshes that would be hundreds of
+  // draw calls; as one InstancedMesh it's a single draw call for all of them.
   const floorHeight = 3;
   const spacing = 2.5;
   const columns = Math.max(1, Math.floor((width - 1) / spacing));
   const startX = -((columns - 1) * spacing) / 2;
-
+  const spots: [number, number, number][] = [];
   for (let y = floorHeight + 1; y < height - 0.8; y += floorHeight) {
     for (let c = 0; c < columns; c++) {
-      const x = startX + c * spacing;
       for (const side of [1, -1]) {
-        const win = new THREE.Mesh(windowGeometry, windowMaterial);
-        win.position.set(x, y, side * (depth / 2 + 0.03));
-        root.add(win);
+        spots.push([startX + c * spacing, y, side * (depth / 2 + 0.03)]);
       }
     }
   }
+  if (spots.length > 0) {
+    const windows = new THREE.InstancedMesh(windowGeometry, windowMaterial, spots.length);
+    const matrix = new THREE.Matrix4();
+    spots.forEach(([x, y, z], i) => windows.setMatrixAt(i, matrix.makeTranslation(x, y, z)));
+    windows.instanceMatrix.needsUpdate = true;
+    windows.computeBoundingSphere();
+    root.add(windows);
+  }
 
+  bakeMeshes(root); // walls, roof and door become one mesh; the instanced windows stay separate
   enableShadows(root);
   return root;
 }

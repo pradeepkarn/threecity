@@ -1,6 +1,6 @@
 import * as THREE from 'three';
 import type { EnterableBuildingModel, LocalBox } from './types';
-import { enableShadows } from './utils';
+import { bakeMeshes, enableShadows } from './utils';
 
 // House dimensions in local space. The front door is in the +Z wall.
 const WIDTH = 12;   // along X
@@ -139,6 +139,9 @@ export async function loadHouseModel(wallColor = 0xf1efe8): Promise<EnterableBui
     roof.add(gable);
   }
 
+  // Bake ~40 boxes into 2 meshes: the house body, and the roof (kept separate so it can hide).
+  bakeMeshes(root, roof);
+  bakeMeshes(roof);
   enableShadows(root);
 
   // Inside = within the inner faces of the walls.

@@ -1,7 +1,9 @@
 import * as THREE from 'three';
 import type { Physics, Vec3 } from '../physics/Physics';
 import { Chunk } from './Chunk';
-import { CHUNK_SIZE, SPAWN_POINT, populateChunk } from './ChunkGenerator';
+import { CityLayout } from './CityLayout';
+import { populateChunk } from './ChunkGenerator';
+import { CHUNK_SIZE, MAX_CHUNK, MIN_CHUNK, WORLD_HALF, chunkOf } from './config';
 
 // How many chunks to keep around the player in each direction.
 // 1 means a 3 x 3 grid (9 chunks) with the player always in the middle one:
@@ -16,56 +18,67 @@ const VIEW_RADIUS = 1;
 const SWITCH_MARGIN = 4;
 
 /**
- * The streaming city. Keeps a 3 x 3 grid of chunks around the player:
- * when the player crosses into another chunk, chunks that fall outside the grid are
- * deleted and the new ones ahead are loaded, so the player is always in the middle.
+ * The city, streamed in pieces. The whole city LAYOUT (roads, buildings, rivers as plain data)
+ * is worked out once at startup. Only the 3 x 3 chunks around the player are actually BUILT
+ * (meshes and colliders); the rest exists only as data until the player gets close.
  */
 export class World {
-  readonly spawnPoint: Vec3 = SPAWN_POINT;
+  spawnPoint: Vec3 = { x: 0, y: 0, z: 0 };
 
   private readonly scene: THREE.Scene;
   private readonly physics: Physics;
-  private readonly chunks = new Map<string, Chunk>();  // every chunk currently kept, by "cx,cz"
-  private readonly loadQueue: Chunk[] = [];            // chunks waiting to be built
+  private layout!: CityLayout; // created in build()
+  private readonly chunks = new Map<string, Chunk>();
+  private readonly loadQueue: Chunk[] = [];
   private readonly localPoint = new THREE.Vector3();
 
   private centerX = 0;  // grid coordinates of the middle chunk (chunk 5)
   private centerZ = 0;
+  private playerX = 0;  // last known player position, for the on-screen display
+  private playerZ = 0;
 
   constructor(scene: THREE.Scene, physics: Physics) {
     this.scene = scene;
     this.physics = physics;
   }
 
-  /** World X or Z position -> chunk grid coordinate. Chunk 0 spans -40..40, chunk 1 spans 40..120, etc. */
-  static toChunk(position: number): number {
-    return Math.floor(position / CHUNK_SIZE + 0.5);
+  /** Centre of chunk `c` in world units. */
+  private static chunkCenter(c: number): number {
+    return (c + 0.5) * CHUNK_SIZE;
   }
 
-  /** Loads the first 3 x 3 chunks around the spawn point and waits for all of them. */
+  /** Works out the city layout, then builds the first 3 x 3 chunks around the spawn point. */
   async build(): Promise<void> {
-    // One infinite flat floor for the whole world, so the ground never has gaps or seams.
-    this.physics.addGroundPlane();
+    const started = performance.now();
+    this.layout = CityLayout.build();
+    console.log(
+      `City layout ready in ${Math.round(performance.now() - started)} ms: ` +
+      `${this.layout.roads.length} roads, ${this.layout.lots.length} buildings, ${this.layout.bridges.length} bridges`
+    );
 
-    this.centerX = World.toChunk(this.spawnPoint.x);
-    this.centerZ = World.toChunk(this.spawnPoint.z);
+    this.spawnPoint = this.layout.spawnPoint();
+    this.addWorldEdges();
+
+    this.centerX = chunkOf(this.spawnPoint.x);
+    this.centerZ = chunkOf(this.spawnPoint.z);
     const initial = this.refreshChunks();
-    // At startup we wait for every chunk, so the player never spawns into empty space.
     await Promise.all(initial.map((chunk) => this.loadChunk(chunk)));
   }
 
   /** Call every frame with the player's position. */
   update(playerFeet: THREE.Vector3): void {
+    this.playerX = playerFeet.x;
+    this.playerZ = playerFeet.z;
     const limit = CHUNK_SIZE / 2 + SWITCH_MARGIN;
     let changed = false;
 
     // Has the player gone clearly past the edge of the middle chunk?
-    if (Math.abs(playerFeet.x - this.centerX * CHUNK_SIZE) > limit) {
-      this.centerX = World.toChunk(playerFeet.x);
+    if (Math.abs(playerFeet.x - World.chunkCenter(this.centerX)) > limit) {
+      this.centerX = chunkOf(playerFeet.x);
       changed = true;
     }
-    if (Math.abs(playerFeet.z - this.centerZ * CHUNK_SIZE) > limit) {
-      this.centerZ = World.toChunk(playerFeet.z);
+    if (Math.abs(playerFeet.z - World.chunkCenter(this.centerZ)) > limit) {
+      this.centerZ = chunkOf(playerFeet.z);
       changed = true;
     }
 
@@ -95,15 +108,28 @@ export class World {
     return insideAny;
   }
 
-  /** Short status line for the on-screen debug display. */
+  /** Short status line for the on-screen display. */
   get debugText(): string {
     let ready = 0;
     for (const chunk of this.chunks.values()) if (chunk.isReady) ready++;
-    return `Chunk (${this.centerX}, ${this.centerZ})  ·  loaded ${ready}/${this.chunks.size}`;
+    const place = this.layout.placeName(this.playerX, this.playerZ);
+    const x = Math.round(this.playerX);
+    const z = Math.round(this.playerZ);
+    return `${place}  ·  x ${x}, z ${z}  ·  chunk (${this.centerX}, ${this.centerZ})  ·  loaded ${ready}/${this.chunks.size}`;
+  }
+
+  /** Invisible walls at the city's outer edge (behind the border mountains). */
+  private addWorldEdges(): void {
+    const h = 400;
+    const len = WORLD_HALF * 2;
+    this.physics.addStaticBox({ x: 0, y: h / 2, z: WORLD_HALF + 1 }, { x: len, y: h, z: 2 });
+    this.physics.addStaticBox({ x: 0, y: h / 2, z: -WORLD_HALF - 1 }, { x: len, y: h, z: 2 });
+    this.physics.addStaticBox({ x: WORLD_HALF + 1, y: h / 2, z: 0 }, { x: 2, y: h, z: len });
+    this.physics.addStaticBox({ x: -WORLD_HALF - 1, y: h / 2, z: 0 }, { x: 2, y: h, z: len });
   }
 
   /**
-   * Makes the kept chunks match the 3 x 3 grid around the current middle chunk.
+   * Makes the kept chunks match the 3 x 3 grid around the middle chunk (only inside the city).
    * Deletes chunks outside the grid, creates missing ones, and returns the new ones to load.
    */
   private refreshChunks(): Chunk[] {
@@ -114,6 +140,7 @@ export class World {
       for (let dx = -VIEW_RADIUS; dx <= VIEW_RADIUS; dx++) {
         const cx = this.centerX + dx;
         const cz = this.centerZ + dz;
+        if (cx < MIN_CHUNK || cx > MAX_CHUNK || cz < MIN_CHUNK || cz > MAX_CHUNK) continue; // outside the city
         const key = Chunk.keyOf(cx, cz);
         wanted.add(key);
         if (!this.chunks.has(key)) {
@@ -130,21 +157,19 @@ export class World {
         this.chunks.delete(key);
       }
     }
-
     return created;
   }
 
   private async loadChunk(chunk: Chunk): Promise<void> {
     if (!chunk.startLoading()) return; // already removed before its turn came
 
-    await populateChunk(chunk, this.physics);
+    await populateChunk(chunk, this.physics, this.layout);
 
     // The player may have walked away while this chunk was loading.
     if (chunk.cancelled) {
       chunk.dispose(this.scene, this.physics);
       return;
     }
-
     chunk.finishLoading();
     this.scene.add(chunk.group); // only shown once fully built, so it never appears half-done
   }
