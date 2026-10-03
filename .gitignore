@@ -1,0 +1,6 @@
+node_modules
+.zip
+dist
+.env
+next
+.htaccess

@@ -1,0 +1,59 @@
+html,
+body {
+  margin: 0;
+  height: 100%;
+  overflow: hidden;
+  background: #000;
+  touch-action: none;
+  user-select: none;
+  -webkit-user-select: none;
+}
+
+canvas {
+  display: block;
+  touch-action: none;
+}
+
+#joy-base {
+  position: fixed;
+  left: 40px;
+  bottom: 40px;
+  width: 130px;
+  height: 130px;
+  border-radius: 50%;
+  background: rgba(255, 255, 255, 0.25);
+  border: 2px solid rgba(255, 255, 255, 0.5);
+  touch-action: none;
+  z-index: 10;
+}
+
+#joy-knob {
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  width: 56px;
+  height: 56px;
+  margin: -28px 0 0 -28px;
+  border-radius: 50%;
+  background: rgba(255, 255, 255, 0.85);
+  pointer-events: none;
+}
+
+#jump-btn {
+  position: fixed;
+  right: 40px;
+  bottom: 50px;
+  width: 90px;
+  height: 90px;
+  border-radius: 50%;
+  border: 2px solid rgba(255, 255, 255, 0.6);
+  background: rgba(255, 255, 255, 0.3);
+  color: #fff;
+  font: 600 16px sans-serif;
+  touch-action: none;
+  z-index: 10;
+}
+
+#jump-btn:active {
+  background: rgba(255, 255, 255, 0.55);
+}
